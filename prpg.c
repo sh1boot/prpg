@@ -231,7 +231,7 @@ void init(state_t* state, uint64_t max) {
     state->stage[i].mult = rand64() | 1;
     state->istage[i].mult = multinv(state->stage[i].mult);
   }
-  state->z = 1;
+  state->z = 0;
   state->max = max;
   state->m0 = config[bits].m[0];
   state->m1 = config[bits].m[1];
@@ -247,10 +247,11 @@ void init(state_t* state, uint64_t max) {
 uint64_t next(state_t* state) {
   uint64_t z = state->z;
   uint64_t m = ((uint64_t)2 << (state->bits - 1)) - 1;
-  state->z += 0x9e3779b97f4a7c15;
+  state->z = state->z < state->max ? state->z + 1 : 0;
   do {
     for (int i = 0; i < NSTAGES; i++) {
       uint64_t zz = 0;
+      z += 0x9e3779b97f4a7c15;
       for (int j = 0; j < state->bits; j++) {
         if (z & 1) zz ^= state->stage[i].mat[j];
         z >>= 1;
@@ -288,11 +289,9 @@ uint64_t undo(state_t *state, uint64_t x) {
         if (x & 1) xx ^= state->istage[i].mat[j];
         x >>= 1;
       }
-      x = xx;
+      x = xx - 0x9e3779b97f4a7c15;
+      x &= m;
     }
-    /* loop only works if state->z is constrained to be <= state->max, or if
-     * state->max+1 is a power of two.
-     */
   } while (x > state->max);
   return x;
 }
