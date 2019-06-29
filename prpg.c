@@ -23,11 +23,16 @@ typedef struct {
 } state_t;
 
 
+// Just a source of some random bits.  This implementation makes no guarantee
+// about the size of its state and shouldn't generally be used.
 uint64_t rand64(void) {
   return (uint64_t)rand() << 45 ^ (uint64_t)rand() << 20 ^ rand() >> 5;
 }
 
 
+// Calculate the multiplicative inverse, mod-2**64, of x such that:
+//     (x * multinv(x) & 0xffffffffffffffff) == 1
+// This result is also useful for smaller power-of-two ranges.
 static inline uint64_t multinv(uint64_t x) {
   uint64_t ix = x;
   while ((ix * x) != 1) {
@@ -37,6 +42,7 @@ static inline uint64_t multinv(uint64_t x) {
 }
 
 
+// Multiply square matrices of bits (up to 64x64 bits) together.
 static inline void matmul(uint64_t out[64], uint64_t a[64], uint64_t b[64], int bits) {
   for (int i = 0; i < bits; i++) {
     uint64_t m = a[i];
@@ -50,18 +56,25 @@ static inline void matmul(uint64_t out[64], uint64_t a[64], uint64_t b[64], int 
 }
 
 
+// Generate a random matrix and its inverse.  There are invertible matrices
+// which this will not generate, but the subset that it does generate is easy
+// to think about.  It's the product of upper and lower unitriangular matrices.
 static inline void invertiblematrix(uint64_t* out, uint64_t* inv, int bits) {
   uint64_t a[64], b[64];
   uint64_t m = ((uint64_t)2 << (bits - 1)) - 1;
 
+  // Generate upper and lower unitriangular matrices.
   for (int i = 0; i < bits; i++) {
     uint64_t r = rand64();
     a[i] = ((r + r + 1) << i) & m;
     b[i] = (r | ((uint64_t)1 << 63)) >> (63 - i);
   }
+  // And multiply them together
   matmul(out, a, b, bits);
 
   if (inv != NULL) {
+    // Invert upper and lower matrices, because that's really simple when
+    // they're triangular.
     uint64_t ia[64], ib[64];
     for (int i = 0; i < bits; i++) {
       ia[i] = ib[i] = (uint64_t)1 << i;
@@ -83,12 +96,16 @@ static inline void invertiblematrix(uint64_t* out, uint64_t* inv, int bits) {
       ib[i] = r;
     }
 
+    // And multiply them together for the inverse result.
     matmul(inv, ib, ia, bits);
   }
 }
 
 
 void init(state_t* state, uint64_t max) {
+  // A table of murmur3-style mix function parameters.  These were discovered
+  // by searching for values with good hashing properties:
+  // https://sh1blog.blogspot.com/2016/08/n-bit-mixer-functions-eight-to-64-bits.html
   static const struct {
     uint8_t s[3];
     uint64_t m[2];
@@ -243,7 +260,8 @@ void init(state_t* state, uint64_t max) {
   state->bits = bits;
 }
 
-
+// Return values `0 <= x < state->max` in random order without repetition over
+// state->max values.
 uint64_t next(state_t* state) {
   uint64_t z = state->z;
   uint64_t m = ((uint64_t)2 << (state->bits - 1)) - 1;
@@ -251,14 +269,25 @@ uint64_t next(state_t* state) {
   do {
     for (int i = 0; i < NSTAGES; i++) {
       uint64_t zz = 0;
+      // One step of a Weyl generator
+      // (constant is arbitrary, but happens to be phi)
       z += 0x9e3779b97f4a7c15;
+
+      // Matrix by vector multiply
       for (int j = 0; j < state->bits; j++) {
         if (z & 1) zz ^= state->stage[i].mat[j];
         z >>= 1;
       }
+
+      // One step of a Lehmer generator
+      // (multiplicand must be odd to be co-prime to modulo)
       z = zz * state->stage[i].mult;
+
+      // And crop back to the necessary number of bits
       z &= m;
     }
+
+    // murmur3-style mix function
     z ^= z >> state->s0;
     z *= state->m0;
     z &= m;
@@ -266,11 +295,20 @@ uint64_t next(state_t* state) {
     z *= state->m1;
     z &= m;
     z ^= z >> state->s2;
+
+    // Now the result may be out-of-range, in which case we use it as the input
+    // for another round of the same thing.  Another approach would be to use
+    // the next state->z value, but this way is easier to reverse and the
+    // bijective property ensures that it can't get stuck in an out-of-range
+    // cycle (we started in-range, so we can't be on a cycle that is entirely
+    // out-of-range, and we can't fall into such a cycle using bijective
+    // operations).
   } while (z > state->max);
   return z;
 }
 
 
+// Figure out what position in the squence a result from next() was.
 uint64_t undo(state_t *state, uint64_t x) {
   uint64_t m = ((uint64_t)2 << (state->bits - 1)) - 1;
   do {
